@@ -124,8 +124,15 @@ class BloodDetector:
         Every pixel of the image is matched against the red color layers
         in the color file (blood_colors.json). A pixel is blood if it
         falls in ANY layer's HSV range AND passes that layer's LAB
-        A-channel and R-G redness thresholds. Then: face exclusion,
-        morphological cleanup, component area filter.
+        A-channel and R-G redness thresholds.
+
+        Layers marked "grow_only" are handled differently: they are NOT
+        accepted directly (their thresholds are too loose and would catch
+        skin tones). Instead they are accepted only when adjacent to
+        already-detected blood — region growing. This catches the dark
+        edges of blood pools without covering isolated skin.
+
+        Then: face exclusion, morphological cleanup, component filter.
         """
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
@@ -133,7 +140,8 @@ class BloodDetector:
         redness = r.astype(int) - np.maximum(g, b).astype(int)
 
         # 1. Match every pixel against every red layer in the color file
-        mask = np.zeros(bgr.shape[:2], dtype=np.uint8)
+        seed = np.zeros(bgr.shape[:2], dtype=np.uint8)
+        grow_candidates = np.zeros(bgr.shape[:2], dtype=np.uint8)
         for layer in self.layers:
             lo = np.array(layer["hsv_min"], dtype=np.uint8)
             hi = np.array(layer["hsv_max"], dtype=np.uint8)
@@ -147,14 +155,36 @@ class BloodDetector:
             layer_mask = cv2.bitwise_and(
                 layer_mask, (redness > min_red).astype(np.uint8) * 255
             )
-            mask = cv2.bitwise_or(mask, layer_mask)
+            if "max_b" in layer:
+                layer_mask = cv2.bitwise_and(
+                    layer_mask,
+                    (lab[:, :, 2] < int(layer["max_b"])).astype(np.uint8) * 255,
+                )
+            if layer.get("grow_only"):
+                grow_candidates = cv2.bitwise_or(grow_candidates, layer_mask)
+            else:
+                seed = cv2.bitwise_or(seed, layer_mask)
+
+        # 1b. Region growing: accept grow-only pixels adjacent to seed.
+        #     Iteratively dilate the seed and keep only candidate pixels
+        #     that touch the growing region — dark blood edges get caught,
+        #     isolated skin never does.
+        mask = seed.copy()
+        kernel3 = np.ones((3, 3), np.uint8)
+        for _ in range(80):
+            new = cv2.dilate(mask, kernel3) & grow_candidates & ~mask
+            if new.sum() == 0:
+                break
+            mask |= new
 
         # 2. Exclude faces — skin false positives. Blood is never on a face.
         mask = cv2.bitwise_and(mask, cv2.bitwise_not(self._face_mask(bgr)))
 
-        # 3. Morphological cleanup — CLOSE then OPEN with elliptical kernel
+        # 3. Morphological cleanup — CLOSE then OPEN with elliptical kernel.
+        #    Single CLOSE iteration: fills holes without expanding the mask
+        #    into adjacent skin (halo).
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
         # 4. Connected-component filter — drop tiny noise AND giant tissue blobs.
