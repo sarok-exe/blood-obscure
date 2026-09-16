@@ -33,6 +33,7 @@ def cmd_image(args: argparse.Namespace) -> int:
         dilate_pixels=args.dilate,
         blur_passes=args.blur_passes,
         block_size=args.block_size,
+        use_sam=args.sam,
     )
 
     try:
@@ -68,6 +69,7 @@ def cmd_batch(args: argparse.Namespace) -> int:
         dilate_pixels=args.dilate,
         blur_passes=args.blur_passes,
         block_size=args.block_size,
+        use_sam=args.sam,
     )
 
     input_dir = Path(args.input_dir)
@@ -103,6 +105,7 @@ def cmd_detect(args: argparse.Namespace) -> int:
         dilate_pixels=args.dilate,
         blur_passes=args.blur_passes,
         block_size=args.block_size,
+        use_sam=args.sam,
     )
 
     try:
@@ -127,6 +130,7 @@ def cmd_edit(args: argparse.Namespace) -> int:
         dilate_pixels=args.dilate,
         blur_passes=args.blur_passes,
         block_size=args.block_size,
+        use_sam=args.sam,
     )
 
     try:
@@ -213,6 +217,12 @@ def main() -> int:
     common.add_argument(
         "--coords",
         help="Save detected pixel coordinates (x, y) to this JSON file",
+    )
+    common.add_argument(
+        "--sam",
+        action="store_true",
+        help="Refine the mask with MobileSAM (ONNX, CPU). Experimental — "
+             "slower and currently under-segments/over-segments vs color-only.",
     )
 
     parser = argparse.ArgumentParser(

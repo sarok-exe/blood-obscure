@@ -6,6 +6,8 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple
 
+from .refiner import MobileSAMRefiner
+
 
 class BloodDetector:
     """Detects blood/red regions in anatomy images and obscures them.
@@ -29,6 +31,7 @@ class BloodDetector:
         blur_passes: int = 2,
         block_size: int = 100,
         colors_path: Optional[str | Path] = None,
+        use_sam: bool = False,
     ):
         self.blur_strength = blur_strength
         self.inpaint_radius = inpaint_radius
@@ -42,6 +45,8 @@ class BloodDetector:
             Path(__file__).resolve().parent.parent / "blood_colors.json"
         )
         self.layers = self._load_color_layers()
+        self.use_sam = use_sam
+        self.refiner = MobileSAMRefiner()
 
     def _load_color_layers(self) -> list[dict]:
         """Load red color layers from the color file.
@@ -195,6 +200,16 @@ class BloodDetector:
         for i in range(1, num_labels):  # skip background
             if min_area <= stats[i, cv2.CC_STAT_AREA] <= max_area:
                 clean[labels == i] = 255
+
+        # 5. MobileSAM refinement — precise segmentation of each candidate
+        #    box. Catches dark blood edges color thresholds miss, excludes
+        #    skin that color wrongly includes. Falls back to the coarse
+        #    mask if the ONNX models are unavailable.
+        if self.use_sam and self.refiner.available:
+            clean = self.refiner.refine(bgr, clean)
+            # SAM could theoretically re-add face skin near a blood box —
+            # re-apply face exclusion to the refined mask.
+            clean = cv2.bitwise_and(clean, cv2.bitwise_not(self._face_mask(bgr)))
 
         return clean
 
