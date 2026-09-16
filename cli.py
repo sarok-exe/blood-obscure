@@ -100,9 +100,9 @@ def main() -> int:
     parser.add_argument(
         "--method",
         choices=["blur", "inpaint", "pixelate"],
-        default="blur",
-        help="Obscuring method: blur (default), inpaint (natural), "
-             "or pixelate (square blur / mosaic)",
+        default="pixelate",
+        help="Obscuring method: pixelate (square blur / mosaic, default), "
+             "blur (Gaussian), or inpaint (natural)",
     )
     parser.add_argument(
         "--block-size",
@@ -148,9 +148,8 @@ def main() -> int:
     parser.add_argument(
         "--max-area",
         type=float,
-        default=0.15,
-        help="Max region area as fraction of image; larger components are "
-             "treated as tissue false-positives (default: 0.15)",
+        default=1.0,
+        help="Max region area as fraction of image (default: 1.0 = no limit)",
     )
     parser.add_argument(
         "--a-threshold",
