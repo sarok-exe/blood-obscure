@@ -32,6 +32,7 @@ def cmd_image(args: argparse.Namespace) -> int:
         a_channel_threshold=args.a_threshold,
         dilate_pixels=args.dilate,
         blur_passes=args.blur_passes,
+        block_size=args.block_size,
     )
 
     try:
@@ -66,6 +67,7 @@ def cmd_batch(args: argparse.Namespace) -> int:
         a_channel_threshold=args.a_threshold,
         dilate_pixels=args.dilate,
         blur_passes=args.blur_passes,
+        block_size=args.block_size,
     )
 
     input_dir = Path(args.input_dir)
@@ -97,9 +99,18 @@ def main() -> int:
     )
     parser.add_argument(
         "--method",
-        choices=["inpaint", "blur"],
+        choices=["blur", "inpaint", "pixelate"],
         default="blur",
-        help="Obscuring method: blur (default) or inpaint (natural)",
+        help="Obscuring method: blur (default), inpaint (natural), "
+             "or pixelate (square blur / mosaic)",
+    )
+    parser.add_argument(
+        "--block-size",
+        type=int,
+        default=100,
+        help="Square blur: size of each mosaic square in pixels. Must be "
+             "larger than the blood regions so squares swallow the blood "
+             "(default: 100)",
     )
     parser.add_argument(
         "--dilate",

@@ -27,6 +27,7 @@ class BloodDetector:
         a_channel_threshold: int = 140,
         dilate_pixels: int = 5,
         blur_passes: int = 2,
+        block_size: int = 100,
     ):
         self.blur_strength = blur_strength
         self.inpaint_radius = inpaint_radius
@@ -35,6 +36,7 @@ class BloodDetector:
         self.a_channel_threshold = a_channel_threshold
         self.dilate_pixels = dilate_pixels
         self.blur_passes = blur_passes
+        self.block_size = block_size
 
     # ------------------------------------------------------------------ #
     #  HSV blood ranges (OpenCV scale: H 0-180, S 0-255, V 0-255)
@@ -147,6 +149,29 @@ class BloodDetector:
             )
         return np.where(mask[..., None] > 0, blurred, bgr)
 
+    def _pixelate(self, bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """Obscure blood via square blur (mosaic/pixelation).
+
+        The image is divided into a grid of squares, each block_size x
+        block_size pixels. Every square is filled with the average color
+        of its pixels, producing large gathered squares. Blocks that
+        touch the (dilated) blood mask are replaced — the mosaic is
+        allowed to spill outside the blood region.
+        """
+        if self.dilate_pixels > 0:
+            kernel = np.ones((3, 3), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=self.dilate_pixels)
+
+        h, w = bgr.shape[:2]
+        bs = max(1, self.block_size)
+
+        # Downscale then upscale with nearest neighbor = blocky squares
+        small_h, small_w = max(1, h // bs), max(1, w // bs)
+        small = cv2.resize(bgr, (small_w, small_h), interpolation=cv2.INTER_AREA)
+        pixelated = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        return np.where(mask[..., None] > 0, pixelated, bgr)
+
     # ------------------------------------------------------------------ #
     #  Public API
     # ------------------------------------------------------------------ #
@@ -195,6 +220,8 @@ class BloodDetector:
             result[mask > 0] = (0, 0, 0)  # BGR: black
         elif method == "inpaint":
             result = self._inpaint(img, mask)
+        elif method == "pixelate":
+            result = self._pixelate(img, mask)
         else:
             result = self._blur(img, mask)
 
