@@ -23,9 +23,9 @@ class BloodDetector:
         blur_strength: int = 201,
         inpaint_radius: int = 3,
         min_area_ratio: float = 0.0001,
-        max_area_ratio: float = 0.15,
+        max_area_ratio: float = 1.0,
         a_channel_threshold: int = 140,
-        dilate_pixels: int = 10,
+        dilate_pixels: int = 0,
         blur_passes: int = 2,
         block_size: int = 100,
     ):
@@ -133,20 +133,33 @@ class BloodDetector:
     def _blur(self, bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """Obscure blood via strong Gaussian blur.
 
-        Each blood pixel is expanded to a (2*dilate_pixels + 1) square
-        before blurring. The kernel must be much larger than the blood
-        regions so the red signal is diluted into surrounding tissue
-        instead of smeared into a pink haze. Multiple passes strengthen
-        the effect.
+        The kernel is adaptive: sized to 2x the largest blood blob so the
+        red signal is diluted into surrounding tissue even for large blood
+        regions. Only the blood pixels are replaced — nothing outside the
+        mask is touched.
         """
         if self.dilate_pixels > 0:
             kernel = np.ones((3, 3), np.uint8)
             mask = cv2.dilate(mask, kernel, iterations=self.dilate_pixels)
+
+        # Adaptive kernel: 2x the largest blood blob dimension, so even the
+        # center of a big blood region samples surrounding tissue.
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+            mask, connectivity=8
+        )
+        if num_labels > 1:
+            max_dim = max(
+                max(stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT])
+                for i in range(1, num_labels)
+            )
+            k = int(max_dim * 2) | 1  # odd kernel size
+            k = min(k, 999)
+        else:
+            k = self.blur_strength
+
         blurred = bgr.copy()
         for _ in range(max(1, self.blur_passes)):
-            blurred = cv2.GaussianBlur(
-                blurred, (self.blur_strength, self.blur_strength), 0
-            )
+            blurred = cv2.GaussianBlur(blurred, (k, k), 0)
         return np.where(mask[..., None] > 0, blurred, bgr)
 
     def _pixelate(self, bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
