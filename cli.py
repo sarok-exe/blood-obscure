@@ -30,6 +30,8 @@ def cmd_image(args: argparse.Namespace) -> int:
         min_area_ratio=args.min_area,
         max_area_ratio=args.max_area,
         a_channel_threshold=args.a_threshold,
+        dilate_pixels=args.dilate,
+        blur_passes=args.blur_passes,
     )
 
     try:
@@ -62,6 +64,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
         min_area_ratio=args.min_area,
         max_area_ratio=args.max_area,
         a_channel_threshold=args.a_threshold,
+        dilate_pixels=args.dilate,
+        blur_passes=args.blur_passes,
     )
 
     input_dir = Path(args.input_dir)
@@ -94,8 +98,21 @@ def main() -> int:
     parser.add_argument(
         "--method",
         choices=["inpaint", "blur"],
-        default="inpaint",
-        help="Obscuring method: inpaint (natural, default) or blur (fast fallback)",
+        default="blur",
+        help="Obscuring method: blur (default) or inpaint (natural)",
+    )
+    parser.add_argument(
+        "--dilate",
+        type=int,
+        default=5,
+        help="Expand each blood pixel into a (2*N+1) square before covering. "
+             "N=5 gives an 11x11 block around each blood pixel (default: 5)",
+    )
+    parser.add_argument(
+        "--blur-passes",
+        type=int,
+        default=2,
+        help="Number of Gaussian blur passes applied (default: 2)",
     )
     parser.add_argument(
         "--radius",
@@ -106,8 +123,9 @@ def main() -> int:
     parser.add_argument(
         "--blur-strength",
         type=int,
-        default=31,
-        help="Gaussian blur kernel size, must be odd (default: 31)",
+        default=201,
+        help="Gaussian blur kernel size, must be odd. Must be much larger than "
+             "the blood regions to fully dilute the red signal (default: 201)",
     )
     parser.add_argument(
         "--min-area",

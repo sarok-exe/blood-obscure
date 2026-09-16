@@ -20,17 +20,21 @@ class BloodDetector:
 
     def __init__(
         self,
-        blur_strength: int = 31,
+        blur_strength: int = 201,
         inpaint_radius: int = 3,
         min_area_ratio: float = 0.0001,
         max_area_ratio: float = 0.15,
         a_channel_threshold: int = 140,
+        dilate_pixels: int = 5,
+        blur_passes: int = 2,
     ):
         self.blur_strength = blur_strength
         self.inpaint_radius = inpaint_radius
         self.min_area_ratio = min_area_ratio
         self.max_area_ratio = max_area_ratio
         self.a_channel_threshold = a_channel_threshold
+        self.dilate_pixels = dilate_pixels
+        self.blur_passes = blur_passes
 
     # ------------------------------------------------------------------ #
     #  HSV blood ranges (OpenCV scale: H 0-180, S 0-255, V 0-255)
@@ -125,8 +129,22 @@ class BloodDetector:
         return (soft * inpainted + (1.0 - soft) * bgr).astype(np.uint8)
 
     def _blur(self, bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """Obscure blood via Gaussian blur — fallback method."""
-        blurred = cv2.GaussianBlur(bgr, (self.blur_strength, self.blur_strength), 0)
+        """Obscure blood via strong Gaussian blur.
+
+        Each blood pixel is expanded to a (2*dilate_pixels + 1) square
+        before blurring. The kernel must be much larger than the blood
+        regions so the red signal is diluted into surrounding tissue
+        instead of smeared into a pink haze. Multiple passes strengthen
+        the effect.
+        """
+        if self.dilate_pixels > 0:
+            kernel = np.ones((3, 3), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=self.dilate_pixels)
+        blurred = bgr.copy()
+        for _ in range(max(1, self.blur_passes)):
+            blurred = cv2.GaussianBlur(
+                blurred, (self.blur_strength, self.blur_strength), 0
+            )
         return np.where(mask[..., None] > 0, blurred, bgr)
 
     # ------------------------------------------------------------------ #
