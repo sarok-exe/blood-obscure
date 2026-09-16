@@ -71,6 +71,39 @@ class BloodDetector:
         lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
         return (lab[:, :, 1] > self.a_channel_threshold).astype(np.uint8) * 255
 
+    def _face_mask(self, bgr: np.ndarray) -> np.ndarray:
+        """Face detection via OpenCV Haar cascade — dilated face boxes.
+
+        Faces are the most common skin false-positive. Returns an empty
+        mask if the cascade is unavailable or no faces are found.
+        """
+        h, w = bgr.shape[:2]
+        face_mask = np.zeros((h, w), dtype=np.uint8)
+        try:
+            cascade_path = (
+                Path(__file__).resolve().parent.parent
+                / "models"
+                / "haarcascade_frontalface_default.xml"
+            )
+            if not cascade_path.exists():
+                return face_mask
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            cascade = cv2.CascadeClassifier(str(cascade_path))
+            faces = cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40)
+            )
+            for (x, y, fw, fh) in faces:
+                x1 = max(0, x - int(0.1 * fw))
+                y1 = max(0, y - int(0.15 * fh))
+                x2 = min(w, x + fw + int(0.1 * fw))
+                y2 = min(h, y + fh + int(0.2 * fh))
+                cv2.rectangle(face_mask, (x1, y1), (x2, y2), 255, -1)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
+            face_mask = cv2.dilate(face_mask, kernel)
+        except Exception:
+            pass  # cascade missing or failed — no face exclusion
+        return face_mask
+
     def build_mask(self, bgr: np.ndarray) -> np.ndarray:
         """Build a clean binary mask of blood regions.
 
@@ -91,6 +124,16 @@ class BloodDetector:
 
         # 2. LAB A-channel confirmation — rejects warm tissue (muscle, skin)
         mask = cv2.bitwise_and(mask, self._a_channel_mask(bgr))
+
+        # 2b. Require genuine redness (R - max(G,B) > 40): removes non-red
+        #     false positives (dark tissue, shadows, other colors).
+        b, g, r = cv2.split(bgr)
+        redness = (r.astype(int) - np.maximum(g, b).astype(int)) > 40
+        mask = cv2.bitwise_and(mask, redness.astype(np.uint8) * 255)
+
+        # 2c. Exclude faces — skin false positives. Blood is never on a face,
+        #     so MediaPipe face boxes are safe to remove entirely.
+        mask = cv2.bitwise_and(mask, cv2.bitwise_not(self._face_mask(bgr)))
 
         # 3. Morphological cleanup — CLOSE then OPEN with elliptical kernel
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
