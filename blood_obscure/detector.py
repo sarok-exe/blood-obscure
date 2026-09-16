@@ -25,11 +25,9 @@ class BloodDetector:
         min_area_ratio: float = 0.0001,
         max_area_ratio: float = 0.15,
         a_channel_threshold: int = 140,
-        dilate_pixels: int = 5,
+        dilate_pixels: int = 10,
         blur_passes: int = 2,
         block_size: int = 100,
-        margin_mm: float = 2.0,
-        dpi: int = 300,
     ):
         self.blur_strength = blur_strength
         self.inpaint_radius = inpaint_radius
@@ -39,20 +37,6 @@ class BloodDetector:
         self.dilate_pixels = dilate_pixels
         self.blur_passes = blur_passes
         self.block_size = block_size
-        self.margin_mm = margin_mm
-        self.dpi = dpi
-
-    @property
-    def effective_dilation(self) -> int:
-        """Coverage margin in pixels.
-
-        If dilate_pixels is explicitly set (> 0) it wins; otherwise the
-        margin is converted from millimeters using the image DPI:
-        px = mm / 25.4 * dpi.
-        """
-        if self.dilate_pixels > 0:
-            return self.dilate_pixels
-        return max(1, round(self.margin_mm / 25.4 * self.dpi))
 
     # ------------------------------------------------------------------ #
     #  HSV blood ranges (OpenCV scale: H 0-180, S 0-255, V 0-255)
@@ -149,16 +133,15 @@ class BloodDetector:
     def _blur(self, bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """Obscure blood via strong Gaussian blur.
 
-        Each blood pixel is expanded to a (2*effective_dilation + 1)
-        square before blurring. The kernel must be much larger than the
-        blood regions so the red signal is diluted into surrounding tissue
+        Each blood pixel is expanded to a (2*dilate_pixels + 1) square
+        before blurring. The kernel must be much larger than the blood
+        regions so the red signal is diluted into surrounding tissue
         instead of smeared into a pink haze. Multiple passes strengthen
         the effect.
         """
-        dilation = self.effective_dilation
-        if dilation > 0:
+        if self.dilate_pixels > 0:
             kernel = np.ones((3, 3), np.uint8)
-            mask = cv2.dilate(mask, kernel, iterations=dilation)
+            mask = cv2.dilate(mask, kernel, iterations=self.dilate_pixels)
         blurred = bgr.copy()
         for _ in range(max(1, self.blur_passes)):
             blurred = cv2.GaussianBlur(
@@ -175,10 +158,9 @@ class BloodDetector:
         touch the (dilated) blood mask are replaced — the mosaic is
         allowed to spill outside the blood region.
         """
-        dilation = self.effective_dilation
-        if dilation > 0:
+        if self.dilate_pixels > 0:
             kernel = np.ones((3, 3), np.uint8)
-            mask = cv2.dilate(mask, kernel, iterations=dilation)
+            mask = cv2.dilate(mask, kernel, iterations=self.dilate_pixels)
 
         h, w = bgr.shape[:2]
         bs = max(1, self.block_size)
