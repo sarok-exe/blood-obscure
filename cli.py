@@ -33,6 +33,8 @@ def cmd_image(args: argparse.Namespace) -> int:
         dilate_pixels=args.dilate,
         blur_passes=args.blur_passes,
         block_size=args.block_size,
+        margin_mm=args.margin_mm,
+        dpi=args.dpi,
     )
 
     try:
@@ -68,6 +70,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
         dilate_pixels=args.dilate,
         blur_passes=args.blur_passes,
         block_size=args.block_size,
+        margin_mm=args.margin_mm,
+        dpi=args.dpi,
     )
 
     input_dir = Path(args.input_dir)
@@ -115,9 +119,24 @@ def main() -> int:
     parser.add_argument(
         "--dilate",
         type=int,
-        default=5,
-        help="Expand each blood pixel into a (2*N+1) square before covering. "
-             "N=5 gives an 11x11 block around each blood pixel (default: 5)",
+        default=0,
+        help="Explicit coverage margin in pixels. 0 (default) uses "
+             "--margin-mm converted via --dpi instead.",
+    )
+    parser.add_argument(
+        "--margin-mm",
+        type=float,
+        default=2.0,
+        help="Coverage margin beyond the blood in millimeters, converted "
+             "to pixels via --dpi. Approx. 2mm of pixels around the blood "
+             "(default: 2.0)",
+    )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="Image DPI used to convert --margin-mm to pixels: "
+             "px = mm / 25.4 * dpi (default: 300)",
     )
     parser.add_argument(
         "--blur-passes",
