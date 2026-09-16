@@ -1,0 +1,33 @@
+{
+  "description": "Red color layers for blood detection. Each layer is an HSV range (OpenCV scale: H 0-180, S 0-255, V 0-255) plus confirmation thresholds. A pixel matches a layer if it falls in the HSV range AND passes the layer's LAB A-channel and R-G redness thresholds. Layers are OR-ed together: a pixel matching any layer is detected as blood.",
+  "layers": [
+    {
+      "name": "fresh_bright_red",
+      "hsv_min": [0, 60, 50],
+      "hsv_max": [10, 255, 255],
+      "min_a": 140,
+      "min_redness": 40
+    },
+    {
+      "name": "fresh_bright_red_wrapped",
+      "hsv_min": [160, 60, 50],
+      "hsv_max": [180, 255, 255],
+      "min_a": 140,
+      "min_redness": 40
+    },
+    {
+      "name": "dried_red",
+      "hsv_min": [8, 100, 40],
+      "hsv_max": [15, 255, 255],
+      "min_a": 140,
+      "min_redness": 40
+    },
+    {
+      "name": "dark_clotted_red",
+      "hsv_min": [0, 30, 20],
+      "hsv_max": [15, 255, 130],
+      "min_a": 125,
+      "min_redness": 15
+    }
+  ]
+}

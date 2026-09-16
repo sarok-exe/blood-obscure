@@ -28,6 +28,7 @@ class BloodDetector:
         dilate_pixels: int = 0,
         blur_passes: int = 2,
         block_size: int = 100,
+        colors_path: Optional[str | Path] = None,
     ):
         self.blur_strength = blur_strength
         self.inpaint_radius = inpaint_radius
@@ -37,39 +38,52 @@ class BloodDetector:
         self.dilate_pixels = dilate_pixels
         self.blur_passes = blur_passes
         self.block_size = block_size
+        self.colors_path = colors_path or (
+            Path(__file__).resolve().parent.parent / "blood_colors.json"
+        )
+        self.layers = self._load_color_layers()
 
-    # ------------------------------------------------------------------ #
-    #  HSV blood ranges (OpenCV scale: H 0-180, S 0-255, V 0-255)
-    # ------------------------------------------------------------------ #
+    def _load_color_layers(self) -> list[dict]:
+        """Load red color layers from the color file.
 
-    @staticmethod
-    def _fresh_blood_range() -> Tuple[np.ndarray, np.ndarray]:
-        """Bright, oxygenated red — fresh blood (H 0-10)."""
-        return np.array([0, 60, 50]), np.array([10, 255, 255])
-
-    @staticmethod
-    def _fresh_blood_range2() -> Tuple[np.ndarray, np.ndarray]:
-        """Wrap-around range for red (H 160-180)."""
-        return np.array([160, 60, 50]), np.array([180, 255, 255])
-
-    @staticmethod
-    def _dried_blood_range() -> Tuple[np.ndarray, np.ndarray]:
-        """Dried/coagulated blood — orange-shifted hue, must be saturated.
-
-        Narrow H band (8-15) and high S floor (100) keep warm tissue out;
-        the A-channel filter (applied later) rejects the rest.
+        Each layer: {"name", "hsv_min", "hsv_max", "min_a", "min_redness"}.
+        Falls back to the original hardcoded layers if the file is missing.
         """
-        return np.array([8, 100, 40]), np.array([15, 255, 255])
+        try:
+            with open(self.colors_path) as f:
+                data = json.load(f)
+            layers = data["layers"]
+            if not layers:
+                raise ValueError("color file has no layers")
+            return layers
+        except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError):
+            return [
+                {
+                    "name": "fresh_bright_red",
+                    "hsv_min": [0, 60, 50],
+                    "hsv_max": [10, 255, 255],
+                    "min_a": self.a_channel_threshold,
+                    "min_redness": 40,
+                },
+                {
+                    "name": "fresh_bright_red_wrapped",
+                    "hsv_min": [160, 60, 50],
+                    "hsv_max": [180, 255, 255],
+                    "min_a": self.a_channel_threshold,
+                    "min_redness": 40,
+                },
+                {
+                    "name": "dried_red",
+                    "hsv_min": [8, 100, 40],
+                    "hsv_max": [15, 255, 255],
+                    "min_a": self.a_channel_threshold,
+                    "min_redness": 40,
+                },
+            ]
 
     # ------------------------------------------------------------------ #
     #  Mask pipeline
     # ------------------------------------------------------------------ #
-
-    def _a_channel_mask(self, bgr: np.ndarray) -> np.ndarray:
-        """LAB A-channel confirmation: blood is strongly red (A high),
-        warm tissue is only mildly red. Rejects tissue false positives."""
-        lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
-        return (lab[:, :, 1] > self.a_channel_threshold).astype(np.uint8) * 255
 
     def _face_mask(self, bgr: np.ndarray) -> np.ndarray:
         """Face detection via OpenCV Haar cascade — dilated face boxes.
@@ -107,32 +121,35 @@ class BloodDetector:
     def build_mask(self, bgr: np.ndarray) -> np.ndarray:
         """Build a clean binary mask of blood regions.
 
-        Pipeline: HSV threshold (tiered) -> LAB A-channel confirmation
-                  -> morphological cleanup -> component area filter.
+        Every pixel of the image is matched against the red color layers
+        in the color file (blood_colors.json). A pixel is blood if it
+        falls in ANY layer's HSV range AND passes that layer's LAB
+        A-channel and R-G redness thresholds. Then: face exclusion,
+        morphological cleanup, component area filter.
         """
-        # 1. HSV thresholding — dual-range for red + narrow dried-blood tier
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        lo1, hi1 = self._fresh_blood_range()
-        lo2, hi2 = self._fresh_blood_range2()
-        lo3, hi3 = self._dried_blood_range()
-
-        mask = (
-            cv2.inRange(hsv, lo1, hi1)
-            | cv2.inRange(hsv, lo2, hi2)
-            | cv2.inRange(hsv, lo3, hi3)
-        )
-
-        # 2. LAB A-channel confirmation — rejects warm tissue (muscle, skin)
-        mask = cv2.bitwise_and(mask, self._a_channel_mask(bgr))
-
-        # 2b. Require genuine redness (R - max(G,B) > 40): removes non-red
-        #     false positives (dark tissue, shadows, other colors).
+        lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
         b, g, r = cv2.split(bgr)
-        redness = (r.astype(int) - np.maximum(g, b).astype(int)) > 40
-        mask = cv2.bitwise_and(mask, redness.astype(np.uint8) * 255)
+        redness = r.astype(int) - np.maximum(g, b).astype(int)
 
-        # 2c. Exclude faces — skin false positives. Blood is never on a face,
-        #     so MediaPipe face boxes are safe to remove entirely.
+        # 1. Match every pixel against every red layer in the color file
+        mask = np.zeros(bgr.shape[:2], dtype=np.uint8)
+        for layer in self.layers:
+            lo = np.array(layer["hsv_min"], dtype=np.uint8)
+            hi = np.array(layer["hsv_max"], dtype=np.uint8)
+            min_a = int(layer.get("min_a", self.a_channel_threshold))
+            min_red = int(layer.get("min_redness", 40))
+
+            layer_mask = cv2.inRange(hsv, lo, hi)
+            layer_mask = cv2.bitwise_and(
+                layer_mask, (lab[:, :, 1] > min_a).astype(np.uint8) * 255
+            )
+            layer_mask = cv2.bitwise_and(
+                layer_mask, (redness > min_red).astype(np.uint8) * 255
+            )
+            mask = cv2.bitwise_or(mask, layer_mask)
+
+        # 2. Exclude faces — skin false positives. Blood is never on a face.
         mask = cv2.bitwise_and(mask, cv2.bitwise_not(self._face_mask(bgr)))
 
         # 3. Morphological cleanup — CLOSE then OPEN with elliptical kernel
@@ -141,8 +158,6 @@ class BloodDetector:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
         # 4. Connected-component filter — drop tiny noise AND giant tissue blobs.
-        #    A component covering > max_area_ratio of the frame is almost
-        #    certainly warm tissue, not blood.
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
         min_area = int(bgr.shape[0] * bgr.shape[1] * self.min_area_ratio)
         max_area = int(bgr.shape[0] * bgr.shape[1] * self.max_area_ratio)
