@@ -228,6 +228,21 @@ class BloodDetector:
 
         return np.where(mask[..., None] > 0, pixelated, bgr)
 
+    def _white(self, bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """Obscure blood by painting every detected pixel pure white.
+
+        Only the masked pixels are changed — everything outside the mask
+        is untouched. This is the strongest possible covering: the blood
+        color is fully replaced, not diluted.
+        """
+        if self.dilate_pixels > 0:
+            kernel = np.ones((3, 3), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=self.dilate_pixels)
+
+        result = bgr.copy()
+        result[mask > 0] = (255, 255, 255)  # BGR: white
+        return result
+
     # ------------------------------------------------------------------ #
     #  Public API
     # ------------------------------------------------------------------ #
@@ -278,6 +293,8 @@ class BloodDetector:
             result = self._inpaint(img, mask)
         elif method == "pixelate":
             result = self._pixelate(img, mask)
+        elif method == "white":
+            result = self._white(img, mask)
         else:
             result = self._blur(img, mask)
 
@@ -307,6 +324,109 @@ class BloodDetector:
             cv2.imwrite(str(mask_path), mask)
 
         return result, mask
+
+    # ------------------------------------------------------------------ #
+    #  Two-stage pipeline: detect → JSON → edit
+    # ------------------------------------------------------------------ #
+
+    def detect_only(
+        self,
+        image_path: str | Path,
+        coords_path: str | Path,
+    ) -> np.ndarray:
+        """Stage 1 — detect blood and write every pixel's (x, y) to JSON.
+
+        The image is NOT modified. This isolates the detection model from
+        editing so that missed blood or false positives can be diagnosed
+        independently.
+
+        JSON schema::
+
+            {
+              "image": "photo.jpg",
+              "width": 1920,
+              "height": 1080,
+              "count": 12345,
+              "pixels": [{"x": 1, "y": 2}, ...]
+            }
+
+        Returns the detection mask.
+        """
+        img = cv2.imread(str(image_path))
+        if img is None:
+            raise FileNotFoundError(f"Cannot read image: {image_path}")
+
+        mask = self.build_mask(img)
+        ys, xs = np.where(mask > 0)
+        coords = [{"x": int(x), "y": int(y)} for x, y in zip(xs, ys)]
+
+        coords_path = Path(coords_path)
+        coords_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "image": str(image_path),
+            "width": int(img.shape[1]),
+            "height": int(img.shape[0]),
+            "count": len(coords),
+            "pixels": coords,
+        }
+        with open(coords_path, "w") as f:
+            json.dump(data, f, indent=1)
+        print(f"Stage 1: {len(coords)} blood pixels detected -> {coords_path}")
+        return mask
+
+    def edit_from_coords(
+        self,
+        image_path: str | Path,
+        coords_path: str | Path,
+        output_path: Optional[str | Path] = None,
+        method: str = "white",
+    ) -> np.ndarray:
+        """Stage 2 — read coordinates JSON and paint those pixels.
+
+        No detection happens here. This is a pure editing pass: load the
+        image, read every (x, y) from the JSON, and cover them with the
+        chosen method (default: white fill).
+
+        If the output still shows blood, the problem is in the JSON
+        (i.e. the detection stage missed it), not in this editor.
+        """
+        img = cv2.imread(str(image_path))
+        if img is None:
+            raise FileNotFoundError(f"Cannot read image: {image_path}")
+
+        with open(coords_path) as f:
+            data = json.load(f)
+
+        h, w = img.shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        valid = 0
+        for p in data["pixels"]:
+            x, y = int(p["x"]), int(p["y"])
+            if 0 <= x < w and 0 <= y < h:
+                mask[y, x] = 255
+                valid += 1
+
+        if method == "white":
+            result = self._white(img, mask)
+        elif method == "pixelate":
+            result = self._pixelate(img, mask)
+        elif method == "inpaint":
+            result = self._inpaint(img, mask)
+        else:
+            result = self._blur(img, mask)
+
+        if output_path is None:
+            p = Path(image_path)
+            output_path = p.parent / f"{p.stem}_clean{p.suffix}"
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(output_path), result)
+        print(f"Stage 2: painted {valid} pixels ({method}) -> {output_path}")
+        return result
+
+    # ------------------------------------------------------------------ #
+    #  Batch processing
+    # ------------------------------------------------------------------ #
 
     def process_batch(
         self,

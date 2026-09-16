@@ -92,103 +92,172 @@ def cmd_batch(args: argparse.Namespace) -> int:
     return 0 if fail == 0 else 1
 
 
+def cmd_detect(args: argparse.Namespace) -> int:
+    """Stage 1: detect blood and write pixel coordinates to JSON."""
+    detector = BloodDetector(
+        blur_strength=args.blur_strength,
+        inpaint_radius=args.radius,
+        min_area_ratio=args.min_area,
+        max_area_ratio=args.max_area,
+        a_channel_threshold=args.a_threshold,
+        dilate_pixels=args.dilate,
+        blur_passes=args.blur_passes,
+        block_size=args.block_size,
+    )
+
+    try:
+        detector.detect_only(
+            image_path=args.image,
+            coords_path=args.coords,
+        )
+        return 0
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_edit(args: argparse.Namespace) -> int:
+    """Stage 2: read coordinates JSON, paint those pixels."""
+    detector = BloodDetector(
+        blur_strength=args.blur_strength,
+        inpaint_radius=args.radius,
+        min_area_ratio=args.min_area,
+        max_area_ratio=args.max_area,
+        a_channel_threshold=args.a_threshold,
+        dilate_pixels=args.dilate,
+        blur_passes=args.blur_passes,
+        block_size=args.block_size,
+    )
+
+    try:
+        detector.edit_from_coords(
+            image_path=args.image,
+            coords_path=args.coords,
+            output_path=args.output,
+            method=args.method,
+        )
+        return 0
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Obscure blood in anatomy project images.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
+    # --- Shared flags inherited by every subcommand ---
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
         "--method",
-        choices=["blur", "inpaint", "pixelate"],
-        default="pixelate",
-        help="Obscuring method: pixelate (square blur / mosaic, default), "
-             "blur (Gaussian), or inpaint (natural)",
+        choices=["white", "pixelate", "blur", "inpaint"],
+        default="white",
+        help="Covering method: white (paint blood pixels white, default), "
+             "pixelate (square mosaic), blur (Gaussian), inpaint (natural)",
     )
-    parser.add_argument(
+    common.add_argument(
         "--block-size",
         type=int,
         default=100,
-        help="Square blur: size of each mosaic square in pixels. Must be "
-             "larger than the blood regions so squares swallow the blood "
-             "(default: 100)",
+        help="Square blur: size of each mosaic square in pixels (default: 100)",
     )
-    parser.add_argument(
+    common.add_argument(
         "--dilate",
         type=int,
         default=10,
-        help="Extra pixels added on each side of the blood region, even "
-             "where there is no blood. E.g. a 200px blood area with "
-             "--dilate 10 covers 220px (default: 10)",
+        help="Extra pixels on each side of blood region (default: 10)",
     )
-    parser.add_argument(
+    common.add_argument(
         "--blur-passes",
         type=int,
         default=2,
-        help="Number of Gaussian blur passes applied (default: 2)",
+        help="Number of Gaussian blur passes (default: 2)",
     )
-    parser.add_argument(
+    common.add_argument(
         "--radius",
         type=int,
         default=5,
         help="Inpaint radius in pixels (default: 5)",
     )
-    parser.add_argument(
+    common.add_argument(
         "--blur-strength",
         type=int,
         default=201,
-        help="Gaussian blur kernel size, must be odd. Must be much larger than "
-             "the blood regions to fully dilute the red signal (default: 201)",
+        help="Gaussian blur kernel size, must be odd (default: 201)",
     )
-    parser.add_argument(
+    common.add_argument(
         "--min-area",
         type=float,
         default=0.0001,
-        help="Minimum region area as fraction of image (default: 0.0001)",
+        help="Min region area as fraction of image (default: 0.0001)",
     )
-    parser.add_argument(
+    common.add_argument(
         "--max-area",
         type=float,
         default=1.0,
         help="Max region area as fraction of image (default: 1.0 = no limit)",
     )
-    parser.add_argument(
+    common.add_argument(
         "--a-threshold",
         type=int,
         default=140,
-        help="LAB A-channel threshold for blood confirmation. Lower = more "
-             "aggressive detection (may catch warm tissue), higher = stricter "
-             "(default: 140)",
+        help="LAB A-channel threshold for blood (default: 140)",
     )
-    parser.add_argument(
+    common.add_argument(
         "--save-mask",
         action="store_true",
         help="Also save the detection mask for inspection",
     )
-    parser.add_argument(
+    common.add_argument(
         "--debug",
         choices=["red", "black"],
-        help="Experiment mode: 'red' paints every detected pixel red on a "
-             "grayscale copy; 'black' paints every detected pixel black on "
-             "the original (simple covering test)",
+        help="Experiment mode: 'red' or 'black' paint detection overlay",
     )
-    parser.add_argument(
+    common.add_argument(
         "--coords",
-        help="Save all detected pixel coordinates (x, y) to this JSON file",
+        help="Save detected pixel coordinates (x, y) to this JSON file",
     )
 
+    parser = argparse.ArgumentParser(
+        description="Obscure blood in anatomy project images.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # --- Single image ---
-    p_img = sub.add_parser("image", help="Process a single image")
+    p_img = sub.add_parser("image", parents=[common], help="Process a single image")
     p_img.add_argument("image", help="Path to input image")
     p_img.add_argument("-o", "--output", help="Output path (default: auto)")
     p_img.set_defaults(func=cmd_image)
 
     # --- Batch ---
-    p_batch = sub.add_parser("batch", help="Process all images in a directory")
+    p_batch = sub.add_parser("batch", parents=[common],
+                             help="Process all images in a directory")
     p_batch.add_argument("input_dir", help="Directory with input images")
     p_batch.add_argument("-o", "--output", help="Output directory (default: ./output)")
     p_batch.set_defaults(func=cmd_batch)
+
+    # --- Detect (stage 1) ---
+    p_detect = sub.add_parser(
+        "detect", parents=[common],
+        help="Stage 1: detect blood, write pixel coordinates to JSON",
+    )
+    p_detect.add_argument("image", help="Path to input image")
+    p_detect.add_argument(
+        "coords",
+        help="Output JSON file with detected pixel coordinates (x, y)",
+    )
+    p_detect.set_defaults(func=cmd_detect)
+
+    # --- Edit (stage 2) ---
+    p_edit = sub.add_parser(
+        "edit", parents=[common],
+        help="Stage 2: read coordinates JSON, paint those pixels",
+    )
+    p_edit.add_argument("image", help="Path to original input image")
+    p_edit.add_argument(
+        "coords",
+        help="JSON file with pixel coordinates (from detect)",
+    )
+    p_edit.add_argument("-o", "--output", help="Output path (default: auto)")
+    p_edit.set_defaults(func=cmd_edit)
 
     args = parser.parse_args()
     return args.func(args)
