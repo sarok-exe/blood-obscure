@@ -1,0 +1,40 @@
+{
+  "description": "Red color layers for blood detection. Each layer is an HSV range (OpenCV scale: H 0-180, S 0-255, V 0-255) plus confirmation thresholds. A pixel matches a layer if it falls in the HSV range AND passes the layer's LAB A-channel and R-G redness thresholds. Layers are OR-ed together: a pixel matching any layer is detected as blood. Layers with \"grow_only\": true are NOT detected directly — they are only accepted if adjacent to already-detected blood (region growing), which catches dark blood edges without covering isolated skin tones.",
+  "layers": [
+    {
+      "name": "fresh_bright_red",
+      "hsv_min": [0, 40, 50],
+      "hsv_max": [10, 255, 255],
+      "min_a": 155,
+      "min_redness": 25
+    },
+    {
+      "name": "fresh_bright_red_wrapped",
+      "hsv_min": [160, 40, 50],
+      "hsv_max": [180, 255, 255],
+      "min_a": 155,
+      "min_redness": 25
+    },
+    {
+      "name": "dried_red",
+      "hsv_min": [8, 40, 40],
+      "hsv_max": [15, 255, 255],
+      "min_a": 155,
+      "min_redness": 25
+    },
+    {
+      "name": "dark_clotted_red",
+      "grow_only": true,
+      "hsv_min": [0, 40, 20],
+      "hsv_max": [15, 255, 115],
+      "min_a": 140,
+      "min_redness": 15,
+      "max_b": 145
+    }
+  ],
+  "morphology": {"open_kernel": 0, "close_kernel": 11, "dilate": 0},
+  "min_area": 500,
+  "grow_iterations": 80,
+  "pixelate_block": 12,
+  "feather": false
+}
