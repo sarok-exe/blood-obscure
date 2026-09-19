@@ -256,7 +256,7 @@ def main(argv=None):
     ap.add_argument("--input", required=True, help="Directory of images to process")
     ap.add_argument("--output", default=None, help="Directory for obscured output (default: stats only)")
     ap.add_argument("--config", default=None, help="Path to config JSON (default: obscure_config.json next to script)")
-    ap.add_argument("--method", default="white", choices=["white", "blur", "pixelate"], help="Obscuring method")
+    ap.add_argument("--method", default="pixelate", choices=["white", "blur", "pixelate"], help="Obscuring method")
     ap.add_argument("--eval-masks", default=None, metavar="DIR", help="Ground-truth mask dir -> evaluation mode")
     args = ap.parse_args(argv)
 
