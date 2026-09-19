@@ -30,8 +30,29 @@
       "min_a": 140,
       "min_redness": 15,
       "max_b": 145
+    },
+    {
+      "name": "near_black_blood",
+      "grow_only": true,
+      "hsv_min": [0, 20, 15],
+      "hsv_max": [15, 255, 70],
+      "min_a": 125,
+      "min_redness": 8,
+      "min_redness_ratio": 1.5,
+      "max_b": 140
+    },
+    {
+      "name": "near_black_blood_wrapped",
+      "grow_only": true,
+      "hsv_min": [160, 20, 15],
+      "hsv_max": [180, 255, 70],
+      "min_a": 125,
+      "min_redness": 8,
+      "min_redness_ratio": 1.5,
+      "max_b": 140
     }
   ],
+  "adaptive_saturation": false,
   "morphology": {"open_kernel": 0, "close_kernel": 11, "dilate": 0},
   "min_area": 500,
   "grow_iterations": 80,

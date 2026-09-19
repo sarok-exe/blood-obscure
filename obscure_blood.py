@@ -67,6 +67,23 @@ def detect_blood(bgr, config):
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
     b, g, r = cv2.split(bgr)
     redness = r.astype(int) - np.maximum(g, b).astype(int)
+    # R / max(G,B) ratio, floored at 1 to avoid div-by-zero. Near-black blood
+    # has a high ratio (reddish); dark shadows have a low ratio (neutral).
+    ratio = r.astype(np.float32) / np.maximum(np.maximum(g, b), 1).astype(np.float32)
+
+    # Adaptive saturation floor: estimate the image's own skin saturation and
+    # raise the seed layers' S minimum above it, so bright skin is never
+    # covered while medium-bright blood is still recovered.
+    seed_s_floor = None
+    if config.get("adaptive_saturation", False):
+        H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        red_hue = (H <= 20) | (H >= 160)
+        skin_est = red_hue & (V > 130) & (S < 150)  # bright red-hue, moderate sat
+        if skin_est.sum() > 50:
+            seed_s_floor = int(np.percentile(S[skin_est], 95)) + 15
+        else:
+            seed_s_floor = 40
+        seed_s_floor = max(seed_s_floor, 40)
 
     seed = np.zeros(bgr.shape[:2], dtype=np.uint8)
     candidates = np.zeros(bgr.shape[:2], dtype=np.uint8)
@@ -77,9 +94,17 @@ def detect_blood(bgr, config):
         min_a = int(layer.get("min_a", 140))
         min_red = int(layer.get("min_redness", 40))
 
+        # Seed layers use the adaptive S floor (raised, never lowered);
+        # grow-only layers keep their configured S floors.
+        if seed_s_floor is not None and not layer.get("grow_only"):
+            lo = lo.copy()
+            lo[1] = max(int(lo[1]), seed_s_floor)
+
         m = cv2.inRange(hsv, lo, hi)
         m = cv2.bitwise_and(m, (lab[:, :, 1] > min_a).astype(np.uint8) * 255)
         m = cv2.bitwise_and(m, (redness > min_red).astype(np.uint8) * 255)
+        if "min_redness_ratio" in layer:
+            m = cv2.bitwise_and(m, (ratio > float(layer["min_redness_ratio"])).astype(np.uint8) * 255)
         if "max_b" in layer:
             m = cv2.bitwise_and(m, (lab[:, :, 2] < int(layer["max_b"])).astype(np.uint8) * 255)
 
