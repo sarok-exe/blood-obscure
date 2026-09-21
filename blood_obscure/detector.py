@@ -47,6 +47,7 @@ class BloodDetector:
         self.layers = self._load_color_layers()
         self.use_sam = use_sam
         self.refiner = MobileSAMRefiner()
+        self.classifier = self._load_classifier()
 
     def _load_color_layers(self) -> list[dict]:
         """Load red color layers from the color file.
@@ -86,6 +87,27 @@ class BloodDetector:
                 },
             ]
 
+    def _load_classifier(self):
+        """Load the trained red classifier (DecisionTree) if available.
+
+        The classifier is the skin-safe seed for the ML detection path.
+        Returns None if the model file is missing — the detector then
+        falls back to the color-layer path.
+        """
+        try:
+            import joblib
+
+            path = (
+                Path(__file__).resolve().parent.parent
+                / "models"
+                / "red_classifier.joblib"
+            )
+            if path.exists():
+                return joblib.load(str(path))
+        except Exception:
+            pass
+        return None
+
     # ------------------------------------------------------------------ #
     #  Mask pipeline
     # ------------------------------------------------------------------ #
@@ -95,6 +117,12 @@ class BloodDetector:
 
         Faces are the most common skin false-positive. Returns an empty
         mask if the cascade is unavailable or no faces are found.
+
+        Each detected box is kept only if it actually contains skin-tone
+        pixels (bright, moderately saturated, reddish hue). The cascade
+        fires false positives on anatomy photos (tissue folds, dark
+        regions); those boxes contain no skin and must NOT be excluded —
+        they can cover real blood.
         """
         h, w = bgr.shape[:2]
         face_mask = np.zeros((h, w), dtype=np.uint8)
@@ -111,11 +139,17 @@ class BloodDetector:
             faces = cascade.detectMultiScale(
                 gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40)
             )
+            hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+            H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+            skin = (V > 130) & (S > 60) & (H >= 5) & (H <= 25)
             for (x, y, fw, fh) in faces:
                 x1 = max(0, x - int(0.1 * fw))
                 y1 = max(0, y - int(0.15 * fh))
                 x2 = min(w, x + fw + int(0.1 * fw))
                 y2 = min(h, y + fh + int(0.2 * fh))
+                box = skin[y1:y2, x1:x2]
+                if box.sum() < 0.01 * box.size:
+                    continue  # no skin in box — cascade false positive
                 cv2.rectangle(face_mask, (x1, y1), (x2, y2), 255, -1)
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
             face_mask = cv2.dilate(face_mask, kernel)
@@ -126,27 +160,76 @@ class BloodDetector:
     def build_mask(self, bgr: np.ndarray) -> np.ndarray:
         """Build a clean binary mask of blood regions.
 
-        Every pixel of the image is matched against the red color layers
-        in the color file (blood_colors.json). A pixel is blood if it
-        falls in ANY layer's HSV range AND passes that layer's LAB
-        A-channel and R-G redness thresholds.
+        Two detection paths:
 
-        Layers marked "grow_only" are handled differently: they are NOT
-        accepted directly (their thresholds are too loose and would catch
-        skin tones). Instead they are accepted only when adjacent to
-        already-detected blood — region growing. This catches the dark
-        edges of blood pools without covering isolated skin.
+        ML path (default, when models/red_classifier.joblib exists):
+        - Seed = trained DecisionTree classifier (near-zero skin FP).
+        - Region growing into dark_clotted candidates (dark blood edges)
+          PLUS a bright layer gated by a per-image saturation floor
+          estimated from the image's own skin tones. The floor sits above
+          ~95% of the image's skin saturation, so bright/lighted skin is
+          never covered while medium-bright blood is recovered.
 
-        Then: face exclusion, morphological cleanup, component filter.
+        Layer path (fallback, no classifier file):
+        - Every pixel is matched against the red color layers in the
+          color file (blood_colors.json). A pixel is blood if it falls in
+          ANY layer's HSV range AND passes that layer's LAB A-channel and
+          R-G redness thresholds. Layers marked "grow_only" are accepted
+          only when adjacent to already-detected blood (region growing).
+
+        Then: face exclusion, morphological cleanup (layer path only —
+        the ML path is already skin-tight and morphology re-adds skin),
+        component filter.
         """
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
         b, g, r = cv2.split(bgr)
         redness = r.astype(int) - np.maximum(g, b).astype(int)
 
+        if self.classifier is not None:
+            mask = self._build_mask_ml(bgr, hsv, lab, redness)
+        else:
+            mask = self._build_mask_layers(hsv, lab, redness)
+
+        # 2. Exclude faces — skin false positives. Blood is never on a face.
+        mask = cv2.bitwise_and(mask, cv2.bitwise_not(self._face_mask(bgr)))
+
+        # 3. Morphological cleanup — CLOSE then OPEN with elliptical kernel.
+        #    Layer path only: the ML path's mask is already skin-tight and
+        #    CLOSE/OPEN expands it back into adjacent skin.
+        if self.classifier is None:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+        # 4. Connected-component filter — drop tiny noise AND giant tissue blobs.
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        min_area = int(bgr.shape[0] * bgr.shape[1] * self.min_area_ratio)
+        max_area = int(bgr.shape[0] * bgr.shape[1] * self.max_area_ratio)
+        clean = np.zeros_like(mask)
+        for i in range(1, num_labels):  # skip background
+            if min_area <= stats[i, cv2.CC_STAT_AREA] <= max_area:
+                clean[labels == i] = 255
+
+        # 5. MobileSAM refinement — precise segmentation of each candidate
+        #    box. Catches dark blood edges color thresholds miss, excludes
+        #    skin that color wrongly includes. Falls back to the coarse
+        #    mask if the ONNX models are unavailable.
+        if self.use_sam and self.refiner.available:
+            clean = self.refiner.refine(bgr, clean)
+            # SAM could theoretically re-add face skin near a blood box —
+            # re-apply face exclusion to the refined mask.
+            clean = cv2.bitwise_and(clean, cv2.bitwise_not(self._face_mask(bgr)))
+
+        return clean
+
+    def _build_mask_layers(
+        self, hsv: np.ndarray, lab: np.ndarray, redness: np.ndarray
+    ) -> np.ndarray:
+        """Color-layer seed + region growing (fallback path)."""
         # 1. Match every pixel against every red layer in the color file
-        seed = np.zeros(bgr.shape[:2], dtype=np.uint8)
-        grow_candidates = np.zeros(bgr.shape[:2], dtype=np.uint8)
+        seed = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        grow_candidates = np.zeros(hsv.shape[:2], dtype=np.uint8)
         for layer in self.layers:
             lo = np.array(layer["hsv_min"], dtype=np.uint8)
             hi = np.array(layer["hsv_max"], dtype=np.uint8)
@@ -181,37 +264,90 @@ class BloodDetector:
             if new.sum() == 0:
                 break
             mask |= new
+        return mask
 
-        # 2. Exclude faces — skin false positives. Blood is never on a face.
-        mask = cv2.bitwise_and(mask, cv2.bitwise_not(self._face_mask(bgr)))
+    def _build_mask_ml(
+        self, bgr: np.ndarray, hsv: np.ndarray, lab: np.ndarray, redness: np.ndarray
+    ) -> np.ndarray:
+        """ML-tree seed + adaptive dual-layer region growing.
 
-        # 3. Morphological cleanup — CLOSE then OPEN with elliptical kernel.
-        #    Single CLOSE iteration: fills holes without expanding the mask
-        #    into adjacent skin (halo).
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        Seed: the trained DecisionTree classifier — near-zero skin false
+        positives. Grow candidates: the existing dark_clotted layer (dark
+        blood edges) PLUS a bright layer gated by a per-image saturation
+        floor estimated from the image's own skin tones. The floor sits
+        above ~95% of the image's skin saturation, so bright/lighted skin
+        is never covered while medium-bright blood is recovered.
+        """
+        b, g, r = cv2.split(bgr)
+        red = r.astype(np.float32) - np.maximum(g, b).astype(np.float32)
+        X = np.column_stack(
+            [
+                hsv[:, :, 0].ravel().astype(np.float32),
+                hsv[:, :, 1].ravel().astype(np.float32),
+                hsv[:, :, 2].ravel().astype(np.float32),
+                lab[:, :, 0].ravel().astype(np.float32),
+                lab[:, :, 1].ravel().astype(np.float32),
+                lab[:, :, 2].ravel().astype(np.float32),
+                red.ravel(),
+            ]
+        )
+        tree_mask = self.classifier.predict(X).reshape(bgr.shape[:2]) > 0
+        seed = tree_mask.astype(np.uint8) * 255
 
-        # 4. Connected-component filter — drop tiny noise AND giant tissue blobs.
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        min_area = int(bgr.shape[0] * bgr.shape[1] * self.min_area_ratio)
-        max_area = int(bgr.shape[0] * bgr.shape[1] * self.max_area_ratio)
-        clean = np.zeros_like(mask)
-        for i in range(1, num_labels):  # skip background
-            if min_area <= stats[i, cv2.CC_STAT_AREA] <= max_area:
-                clean[labels == i] = 255
+        # Per-image saturation floor: skin = red-hue, bright, not blood.
+        # Floor sits above ~95% of the image's own skin saturation.
+        H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        red_hue = ((H >= 0) & (H <= 20)) | ((H >= 160) & (H <= 180))
+        skin_est = red_hue & (V > 130) & ~tree_mask
+        if skin_est.sum() > 50:
+            floor = int(np.percentile(S[skin_est], 95)) + 15
+        else:
+            floor = 150
+        floor = max(floor, 140)
 
-        # 5. MobileSAM refinement — precise segmentation of each candidate
-        #    box. Catches dark blood edges color thresholds miss, excludes
-        #    skin that color wrongly includes. Falls back to the coarse
-        #    mask if the ONNX models are unavailable.
-        if self.use_sam and self.refiner.available:
-            clean = self.refiner.refine(bgr, clean)
-            # SAM could theoretically re-add face skin near a blood box —
-            # re-apply face exclusion to the refined mask.
-            clean = cv2.bitwise_and(clean, cv2.bitwise_not(self._face_mask(bgr)))
+        # Grow candidates: dark_clotted (existing grow_only layers) + bright layer
+        grow_candidates = np.zeros(bgr.shape[:2], dtype=np.uint8)
+        for layer in self.layers:
+            if not layer.get("grow_only"):
+                continue
+            lo = np.array(layer["hsv_min"], dtype=np.uint8)
+            hi = np.array(layer["hsv_max"], dtype=np.uint8)
+            min_a = int(layer.get("min_a", self.a_channel_threshold))
+            min_red = int(layer.get("min_redness", 40))
+            layer_mask = cv2.inRange(hsv, lo, hi)
+            layer_mask = cv2.bitwise_and(
+                layer_mask, (lab[:, :, 1] > min_a).astype(np.uint8) * 255
+            )
+            layer_mask = cv2.bitwise_and(
+                layer_mask, (redness > min_red).astype(np.uint8) * 255
+            )
+            if "max_b" in layer:
+                layer_mask = cv2.bitwise_and(
+                    layer_mask,
+                    (lab[:, :, 2] < int(layer["max_b"])).astype(np.uint8) * 255,
+                )
+            grow_candidates = cv2.bitwise_or(grow_candidates, layer_mask)
 
-        return clean
+        # Bright layer: medium-bright blood the tree misses (V 115-146),
+        # gated by the per-image saturation floor to keep skin out.
+        bright = (
+            red_hue
+            & (V > 115)
+            & (S >= floor)
+            & (lab[:, :, 1] > 128)
+            & (lab[:, :, 2] < 152)
+        ).astype(np.uint8) * 255
+        grow_candidates = cv2.bitwise_or(grow_candidates, bright)
+
+        # Region growing: accept grow candidates adjacent to seed.
+        mask = seed.copy()
+        kernel3 = np.ones((3, 3), np.uint8)
+        for _ in range(80):
+            new = cv2.dilate(mask, kernel3) & grow_candidates & ~mask
+            if new.sum() == 0:
+                break
+            mask |= new
+        return mask
 
     # ------------------------------------------------------------------ #
     #  Obscuring methods

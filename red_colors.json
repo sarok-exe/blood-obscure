@@ -1,0 +1,19 @@
+{
+  "description": "Comprehensive RED model — covers every shade of red in HSV space (OpenCV scale: H 0-180, S 0-255, V 0-255). Red hue is H 0-20 plus the wrap H 160-180, at every saturation and brightness: 42 x 256 x 256 = 2,752,512 shades. Unlike the blood model, no LAB A-channel or R-G redness floor is applied (min_a 0, min_redness 0) so NO red shade is excluded. The only implicit filter is the R-G redness check itself: a pixel must have R > max(G, B), which pure gray/white/black (R=G=B) never passes. WARNING: skin tones are reddish and fall inside this space — this model covers skin too. It is the exhaustive red reference, not a blood detector. Use blood_colors.json for blood.",
+  "layers": [
+    {
+      "name": "red_hue_low",
+      "hsv_min": [0, 0, 0],
+      "hsv_max": [20, 255, 255],
+      "min_a": 0,
+      "min_redness": 0
+    },
+    {
+      "name": "red_hue_wrap",
+      "hsv_min": [160, 0, 0],
+      "hsv_max": [180, 255, 255],
+      "min_a": 0,
+      "min_redness": 0
+    }
+  ]
+}

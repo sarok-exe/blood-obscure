@@ -11,3 +11,7 @@ models/
 *.pt
 *.onnx
 *.joblib
+
+# Generated test artifacts
+output/
+red_shades_gen.log

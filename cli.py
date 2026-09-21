@@ -34,6 +34,7 @@ def cmd_image(args: argparse.Namespace) -> int:
         blur_passes=args.blur_passes,
         block_size=args.block_size,
         use_sam=args.sam,
+        colors_path=args.colors,
     )
 
     try:
@@ -70,6 +71,7 @@ def cmd_batch(args: argparse.Namespace) -> int:
         blur_passes=args.blur_passes,
         block_size=args.block_size,
         use_sam=args.sam,
+        colors_path=args.colors,
     )
 
     input_dir = Path(args.input_dir)
@@ -106,6 +108,7 @@ def cmd_detect(args: argparse.Namespace) -> int:
         blur_passes=args.blur_passes,
         block_size=args.block_size,
         use_sam=args.sam,
+        colors_path=args.colors,
     )
 
     try:
@@ -131,6 +134,7 @@ def cmd_edit(args: argparse.Namespace) -> int:
         blur_passes=args.blur_passes,
         block_size=args.block_size,
         use_sam=args.sam,
+        colors_path=args.colors,
     )
 
     try:
@@ -223,6 +227,11 @@ def main() -> int:
         action="store_true",
         help="Refine the mask with MobileSAM (ONNX, CPU). Experimental — "
              "slower and currently under-segments/over-segments vs color-only.",
+    )
+    common.add_argument(
+        "--colors",
+        help="Path to color layers JSON file (default: blood_colors.json). "
+             "Use red_colors.json for the exhaustive red model.",
     )
 
     parser = argparse.ArgumentParser(

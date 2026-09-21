@@ -57,5 +57,20 @@
   "min_area": 500,
   "grow_iterations": 80,
   "pixelate_block": 30,
-  "feather": false
+  "obscure_method": "fog",
+  "fog": {
+    "base": 30,
+    "extend": 20,
+    "feather": 0.5,
+    "expand": 2.0,
+    "temporal_alpha": 0.4,
+    "safety_redness": 60,
+    "safety_saturation": 40
+  },
+  "feather": false,
+  "anti_detect": {
+    "noise_sigma": 3.0,
+    "resize_factor": 0.97,
+    "flip_horizontal": false
+  }
 }
