@@ -1,19 +1,13 @@
-# Virtual environment
-.venv/
-venv/
+# Runtime data (user images saved by the bot)
+bot_data/
+bot.log
+
+# Python
 __pycache__/
 *.pyc
 
-# Test inputs/outputs
-input/
-output/
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-# Downloaded ML models (re-fetch from HuggingFace)
-models/*.onnx
+# ML artifacts (uncommitted pipeline)
+models/
+*.pt
+*.onnx
+*.joblib

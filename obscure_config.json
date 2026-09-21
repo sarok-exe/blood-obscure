@@ -56,6 +56,6 @@
   "morphology": {"open_kernel": 0, "close_kernel": 11, "dilate": 0},
   "min_area": 500,
   "grow_iterations": 80,
-  "pixelate_block": 18,
+  "pixelate_block": 30,
   "feather": false
 }
